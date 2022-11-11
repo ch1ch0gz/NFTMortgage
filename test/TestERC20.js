@@ -1,9 +1,15 @@
 const { expect } = require("chai");
 const { assert } = require('chai');
 
+const routerAddr = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
+const wethAddr = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+const daiAddr = "0x6b175474e89094c44da98b954eedeac495271d0f";
+
+
 describe("Mortgage", function () {
   let mortgage, nft, accounts, tokenURI, signer, signerAddress,add2,
-  add2Address, loan,interest,deposit, requestedMortgage;
+  add2Address, loan,interest,deposit, requestedMortgage, router, dai;
+
 
   beforeEach(async () => {
       accounts = await ethers.provider.listAccounts();
@@ -14,6 +20,10 @@ describe("Mortgage", function () {
       const NFT = await ethers.getContractFactory("NFT");
       nft = await NFT.deploy();
       await nft.deployed();
+
+      //Fund the sellers address with DAI_ADDR
+      dai = await ethers.getContractAt("IERC20",daiAddr);
+      router = await ethers.getContractAt("IRouter", routerAddr);
 
 
       //Deployment costs
@@ -26,15 +36,26 @@ describe("Mortgage", function () {
       //console.log("contractEstimate")
       //console.log(estimatedGas);
 
-
       signer = ethers.provider.getSigner(0);
       add2 = ethers.provider.getSigner(1);
       [signerAddress, add2Address] = await ethers.provider.listAccounts();
+
+      await router.swapExactETHForTokens(0,[wethAddr, daiAddr],add2Address,
+        Math.floor(Date.now() / 1000) + 60000000000,
+        { value: ethers.utils.parseEther("100") }
+      );
 
       tokenURI = "https://gateway.ipfs.io/ipfs/QmYgTJDNyD1sBhMxk9m1U13jyjAiyWvDJVBi6fvb6DN9C9";
       loan = ethers.utils.parseEther("10");
       interest = ethers.utils.parseEther("2");
       deposit = ethers.utils.parseEther("3");
+      const balanceBuyer = await dai.balanceOf(add2Address);
+      //console.log("dai balance buyer");
+      //console.log(balanceBuyer.toString());
+
+      const balanceSeller = await dai.balanceOf(signerAddress);
+      //console.log("dai balance seller");
+      //console.log(balanceSeller.toString());
 
   });
 
@@ -58,7 +79,7 @@ describe("Mortgage", function () {
           let failed = false;
           const signerAddress = await nft.ownerOf(tokenID);
           try{
-            await mortgage.createMortgage(loan,nft.address,tokenID,deposit,interest,4,"0x0000000000000000000000000000000000000000");
+            await mortgage.createMortgage(loan,nft.address,tokenID,deposit,interest,4,daiAddr);
           }
           catch (error) {
             failed = true;
@@ -78,7 +99,7 @@ describe("Mortgage", function () {
           let succeded = false;
           await nft.approve(mortgage.address,tokenID);
           try {
-            const txResult = await mortgage.createMortgage(loan,nft.address,tokenID,deposit,interest,4,"0x0000000000000000000000000000000000000000")
+            const txResult = await mortgage.createMortgage(loan,nft.address,tokenID,deposit,interest,4,daiAddr);
             succeded = true;
           }
           catch (error) {
@@ -94,7 +115,7 @@ describe("Mortgage", function () {
         beforeEach(async () => {
           await nft.approve(mortgage.address,tokenID);
           // 3ETH Price, 1 ETH deposit, 2% interest, 2 months to pay it off
-          tx = await mortgage.createMortgage(loan, nft.address, tokenID, deposit, interest, 4,"0x0000000000000000000000000000000000000000")
+          tx = await mortgage.createMortgage(loan, nft.address, tokenID, deposit, interest, 4,daiAddr)
           receipt = await tx.wait();
           mortgageNft = await mortgage.callStatic.mortgageTracker(1);
         });
@@ -114,57 +135,68 @@ describe("Mortgage", function () {
         });
 
         it('should buyer request a mortgage and send deposit to seller', async() =>{
+            oldBalanceSeller = await dai.balanceOf(signerAddress);
 
-            oldBalanceSeller = await ethers.provider.getBalance(signerAddress);
-            await mortgage.connect(add2).requestMortgageETH(1,{
-                value: ethers.utils.parseUnits("3", "ether"),
-              });
+            mortgageNft = await mortgage.callStatic.mortgageTracker(1);
+            await dai.connect(add2).approve(mortgage.address, deposit);
+            const allowance = await dai.connect(add2).allowance(add2Address, mortgage.address);
+
+            const balanceBuyer = await dai.balanceOf(add2Address);
+
+            await mortgage.connect(add2).requestMortgageERC20(1,deposit);
 
             requestedMortgage = await mortgage.getMortgage(1);
             assert.equal(requestedMortgage.buyer, add2Address);
-            newBalanceSeller = await ethers.provider.getBalance(signerAddress);
-            assert.equal(ethers.utils.formatEther((BigInt(newBalanceSeller)- BigInt(oldBalanceSeller)).toString(), "ether"), 3);
+            newBalanceSeller = await dai.balanceOf(signerAddress);
+            assert.equal((newBalanceSeller- oldBalanceSeller).toString(), deposit.toString());
 
         });
         it('should buyer pay first and second month together should fail', async() =>{
             const time = await network.provider.send("evm_mine") ;
+            const balanceBuyer = await dai.balanceOf(add2Address);
+            await dai.connect(add2).approve(mortgage.address, balanceBuyer);
+            const allowance = await dai.connect(add2).allowance(add2Address, mortgage.address);
 
-            await mortgage.connect(add2).requestMortgageETH(1,{
-              value: ethers.utils.parseUnits("3", "ether"),
-            });
-            oldBalanceSeller = await ethers.provider.getBalance(signerAddress);
+            await mortgage.connect(add2).requestMortgageERC20(1,deposit);
+
+            oldBalanceSeller = await dai.balanceOf(signerAddress);
             monthlyAmount = await mortgage.monthlyPayments(1);
 
-            await mortgage.connect(add2).repayMonthly(1,{value: monthlyAmount.toString()});
-            newBalanceSeller = await ethers.provider.getBalance(signerAddress);
-            assert.equal(newBalanceSeller, oldBalanceSeller.toBigInt() + monthlyAmount.toBigInt());
-            //Try to pay again on the same month should be rejected
-            await expect(mortgage.connect(add2).repayMonthly(1,{value: monthlyAmount.toString()})).to.be.reverted;
+            await mortgage.connect(add2).repayMonthlyERC20(1,monthlyAmount);
 
-            const time1 = await network.provider.send("evm_increaseTime", [2419200])
-            await mortgage.connect(add2).repayMonthly(1,{value: monthlyAmount.toString()});
+            newBalanceSeller = await dai.balanceOf(signerAddress);
+
+            assert.equal(newBalanceSeller.toString(), (BigInt(oldBalanceSeller) + BigInt(monthlyAmount)).toString());
+            //Try to pay again on the same month should be rejected
+            await expect(mortgage.connect(add2).repayMonthlyERC20(1,monthlyAmount)).to.be.reverted;
+
+            //const time1 = await network.provider.send("evm_increaseTime", [2419200])
+            //await mortgage.connect(add2).repayMonthlyERC20(1,monthlyAmount);
 
         });
 
         it('should buyer pay all month and earn nft', async() =>{
-            await network.provider.send("evm_mine");
+            await network.provider.send("evm_mine") ;
             let myMortgage;
             let myDuration;
             let myMortgageStatus;
-            const finalBalance = await mortgage.getFinalBalance(1);
 
-            await mortgage.connect(add2).requestMortgageETH(1,{
-              value: ethers.utils.parseUnits("3", "ether"),
-            });
+            const finalBalance = await mortgage.getFinalBalance(1);
+            const balanceBuyer = await dai.balanceOf(add2Address);
+            await dai.connect(add2).approve(mortgage.address, balanceBuyer);
+            const allowance = await dai.connect(add2).allowance(add2Address, mortgage.address);
+
+
+            await mortgage.connect(add2).requestMortgageERC20(1,deposit);
 
             myMortgage = await mortgage.getMortgage(1);
             myDuration = myMortgage.duration;
 
             monthlyAmount = await mortgage.monthlyPayments(1);
-
             for(let i = 0; i< myDuration; i++) {
-              await mortgage.connect(add2).repayMonthly(1,{value: monthlyAmount.toString()});
+              await mortgage.connect(add2).repayMonthlyERC20(1,monthlyAmount);
               await network.provider.send("evm_increaseTime", [2419200]);
+              myMortgage = await mortgage.getMortgage(1);
             }
             const newAddressOwner = await nft.ownerOf(tokenID);
             myMortgage = await mortgage.getMortgage(1);
@@ -176,26 +208,27 @@ describe("Mortgage", function () {
         });
 
         it('should buyer pay all after one month and earn nft', async() =>{
+
           await network.provider.send("evm_mine");
           let myMortgage;
           let myDuration;
-          let remainingBalance;
-          let newAddressOwner;
-          const finalBalance = await mortgage.getFinalBalance(1);
+          let myMortgageStatus;
 
-          await mortgage.connect(add2).requestMortgageETH(1,{
-            value: ethers.utils.parseUnits("3", "ether"),
-          });
+          const finalBalance = await mortgage.getFinalBalance(1);
+          const balanceBuyer = await dai.balanceOf(add2Address);
+          await dai.connect(add2).approve(mortgage.address, balanceBuyer);
+          const allowance = await dai.connect(add2).allowance(add2Address, mortgage.address);
+
+          await mortgage.connect(add2).requestMortgageERC20(1,deposit);
           newAddressOwner = await nft.ownerOf(tokenID);
           myMortgage = await mortgage.getMortgage(1);
           monthlyAmount = await mortgage.monthlyPayments(1);
 
-          await mortgage.connect(add2).repayMonthly(1,{value: monthlyAmount.toString()});
+          await mortgage.connect(add2).repayMonthlyERC20(1,monthlyAmount);
           await network.provider.send("evm_increaseTime", [2419200]);
           myMortgage = await mortgage.getMortgage(1)
           remainingBalance = await mortgage.getRemainingBalance(1);
-
-          await mortgage.connect(add2).repayFullMortgage(1,{value: remainingBalance.toString()});
+          await mortgage.connect(add2).repayFullMortgageERC20(1,remainingBalance);
           newAddressOwner = await nft.ownerOf(tokenID);
           assert.equal(add2Address.toString(), newAddressOwner);
         });
@@ -203,9 +236,13 @@ describe("Mortgage", function () {
         it('should buyer fail to pay first month and get liquidated', async() =>{
           let myMortgageStatus, newAddressOwner;
           await network.provider.send("evm_mine");
-          await mortgage.connect(add2).requestMortgageETH(1,{
-            value: ethers.utils.parseUnits("3", "ether"),
-          });
+          const finalBalance = await mortgage.getFinalBalance(1);
+          const balanceBuyer = await dai.balanceOf(add2Address);
+          await dai.connect(add2).approve(mortgage.address, balanceBuyer);
+          const allowance = await dai.connect(add2).allowance(add2Address, mortgage.address);
+
+          await mortgage.connect(add2).requestMortgageERC20(1,deposit);
+
           await mortgage.mortgageStatus(1);
           myMortgageStatus = await mortgage.callStatic.mortgageStatus(1);
           await network.provider.send("evm_increaseTime", [2419200]);

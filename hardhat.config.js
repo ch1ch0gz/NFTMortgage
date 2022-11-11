@@ -11,6 +11,17 @@ module.exports = {
     goerli: {
       url: process.env.GOERLI_URL,
       accounts: [process.env.PRIVATE_KEY]
+    },
+    hardhat: {
+      forking: {
+        url: process.env.FORKING_URL,
+        blockNumber: 15885316
+      }
+    }
+  },
+  etherscan: {
+    apiKey: {
+      goerli: process.env.ETHERSCAN_API_KEY
     }
   }
 };

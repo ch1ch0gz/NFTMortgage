@@ -7,9 +7,13 @@ import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "prb-math/contracts/PRBMathUD60x18.sol";
+
+import "hardhat/console.sol";
 
 /** @title A mortgage NFT contract
   * @author ch1ch0gz
@@ -21,12 +25,14 @@ contract Mortgage is Ownable, IERC721Receiver {
   event CreateMortgage(address _mortgageCreator,uint256 _mortgageId);
   event DeleteMortgage(address _mortgageCreator,uint256 _mortgageId);
   event RequestMortgageETH(address _mortgageRequestor,uint256 _mortgageId);
+  event RequestMortgageERC20(address _mortgageRequestor,uint256 _mortgageId);
   event RepayFullMortgage(address _mortgageRequestor,uint256 _mortgageId);
   event LiquidateMortgage(address _mortgageCreator,uint256 _mortgageId);
 
 
   using SafeERC20 for IERC20;
   using Counters for Counters.Counter;
+  using Math for uint;
   Counters.Counter private _mortgageId;
   using PRBMathUD60x18 for uint256;
 
@@ -50,7 +56,16 @@ contract Mortgage is Ownable, IERC721Receiver {
     uint256 duration;
   }
 
+  /**
+    * @dev Mapping from mortgageId to actual mortgage particulars
+  */
   mapping(uint256 => MortgageAggrement) public mortgageTracker;
+
+  /**
+    * @dev Mapping from mortgageId to actual token mortgage to be taken in
+  */
+  mapping(uint256 => address) public mortgageTrackerToken;
+
   /**
     * @dev List of nftDespositors and owners
   */
@@ -124,8 +139,9 @@ contract Mortgage is Ownable, IERC721Receiver {
     * @param _initialDeposit initial deposit
     * @param _interest per year
     * @param _duration in months
+    * @param _tokenAddress ERC20 address, for ETH mortgage address(0)
   */
-  function createMortgage(uint256 _price, address _nftAddress,uint256 _tokenId,uint256 _initialDeposit,uint256 _interest, uint256 _duration) external {
+  function createMortgage(uint256 _price, address _nftAddress,uint256 _tokenId,uint256 _initialDeposit,uint256 _interest, uint256 _duration, address _tokenAddress) external {
     MortgageAggrement memory newMortgage = MortgageAggrement(
       { price : _price ,
         initialDeposit: _initialDeposit,
@@ -144,6 +160,7 @@ contract Mortgage is Ownable, IERC721Receiver {
       });
       _mortgageId.increment();
       mortgageTracker[_mortgageId.current()] = newMortgage;
+      mortgageTrackerToken[_mortgageId.current()] = _tokenAddress;
       //transfer NFT to contract
       IERC721(_nftAddress).safeTransferFrom(msg.sender, address(this), _tokenId);
       nftDepositor[msg.sender].push(_mortgageId.current());
@@ -180,6 +197,25 @@ contract Mortgage is Ownable, IERC721Receiver {
     ///TODO: Send wrap NFT to buyer as proof of ownership
   }
 
+  //Used by buyer
+  /**
+    * @dev Request initiate existing mortgage paying ERC20
+    * @param _mortageId the Id of the mortgage
+  */
+  function requestMortgageERC20(uint256 _mortageId, uint256 _amount) external payable{
+    require(_amount == mortgageTracker[_mortageId].initialDeposit, 'Initital deposit is not enough');
+    require(mortgageTracker[_mortageId].status == MortgageStatus.PENDING, 'Mortage is not available');
+    IERC20 erc20Address = IERC20(mortgageTrackerToken[_mortageId]);
+    mortgageTracker[_mortageId].status = MortgageStatus.LIVE;
+    mortgageTracker[_mortageId].buyer = payable(msg.sender);
+    mortgageTracker[_mortageId].time = block.timestamp;
+    mortgageTracker[_mortageId].startLoan = block.timestamp;
+    mortgageTracker[_mortageId].balance = 0 ;
+    erc20Address.transferFrom(mortgageTracker[_mortageId].buyer, mortgageTracker[_mortageId].seller, _amount);
+    emit RequestMortgageERC20(msg.sender, _mortgageId._value);
+    ///TODO: Send wrap NFT to buyer as proof of ownership
+  }
+
   /**
     * @param _mortageId the Id of the mortgage
   */
@@ -208,7 +244,29 @@ contract Mortgage is Ownable, IERC721Receiver {
     mortgageTracker[_mortageId].seller.transfer(msg.value);
     mortgageTracker[_mortageId].balance += monthlyPayments(_mortageId);
     mortgageTracker[_mortageId].time = mortgageTracker[_mortageId].time + 4 weeks;
-    if(mortgageTracker[_mortageId].balance == monthlyPayments(_mortageId) * mortgageTracker[_mortageId].duration) {
+    if(mortgageTracker[_mortageId].balance >= monthlyPayments(_mortageId) * mortgageTracker[_mortageId].duration) {
+      IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
+      mortgageTracker[_mortageId].status = MortgageStatus.PAID;
+      ///TODO: self destruct wrapped NFT
+    }
+  }
+
+  /**
+    * @dev function that allows to pay montly amount of loan in ERC20token
+    * @param _mortageId the Id of the mortgage
+    * For the POC let's assume we do not take into account not all years are 365
+  */
+  function repayMonthlyERC20(uint256 _mortageId, uint256 _amount) external payable{
+    require(mortgageTracker[_mortageId].status == MortgageStatus.LIVE, "Mortgage is not LIVE");
+    require(msg.sender == mortgageTracker[_mortageId].buyer, "Sender is not the buyer of the mortgage");
+    require(_amount == monthlyPayments(_mortageId), "The amount is incorrect");
+    require(mortgageTracker[_mortageId].time < block.timestamp && block.timestamp < mortgageTracker[_mortageId].time + 4 weeks,
+      "You have missed your mortgage monthly payment or already paid it, check status of loan");
+    IERC20 erc20Address = IERC20(mortgageTrackerToken[_mortageId]);
+    erc20Address.transferFrom(mortgageTracker[_mortageId].buyer, mortgageTracker[_mortageId].seller, _amount);
+    mortgageTracker[_mortageId].balance += monthlyPayments(_mortageId);
+    mortgageTracker[_mortageId].time = mortgageTracker[_mortageId].time + 4 weeks;
+    if(mortgageTracker[_mortageId].balance >= monthlyPayments(_mortageId) * mortgageTracker[_mortageId].duration) {
       IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
       mortgageTracker[_mortageId].status = MortgageStatus.PAID;
       ///TODO: self destruct wrapped NFT
@@ -225,12 +283,31 @@ contract Mortgage is Ownable, IERC721Receiver {
     require(msg.sender == mortgageTracker[_mortageId].buyer, "Sender is not the buyer of the mortgage");
     ///TODO: If earlier payment there is a 5% penalty on top of the amount borrowed
     require(msg.value == getRemainingBalance(_mortageId), "balance numbers do not match ");
-
+    mortgageTracker[_mortageId].seller.transfer(msg.value);
     IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
     mortgageTracker[_mortageId].status = MortgageStatus.PAID;
     emit RepayFullMortgage(msg.sender, _mortgageId._value);
     ///TODO: self destruct wrapped NFT
   }
+
+  /**
+    * @dev function that allows to pay montly amount of loan in ERC20
+    * For the POC let's assume we do not take into account not all years are 365s
+    * @param _mortageId the Id of the mortgage
+  */
+  function repayFullMortgageERC20(uint256 _mortageId, uint256 _amount) external payable{
+    require(mortgageTracker[_mortageId].status == MortgageStatus.LIVE, "Mortgage is not LIVE");
+    require(msg.sender == mortgageTracker[_mortageId].buyer, "Sender is not the buyer of the mortgage");
+    ///TODO: If earlier payment there is a 5% penalty on top of the amount borrowed
+    require(_amount == getRemainingBalance(_mortageId), "balance numbers do not match ");
+    IERC20 erc20Address = IERC20(mortgageTrackerToken[_mortageId]);
+    erc20Address.transferFrom(mortgageTracker[_mortageId].buyer, mortgageTracker[_mortageId].seller, _amount);
+    IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
+    mortgageTracker[_mortageId].status = MortgageStatus.PAID;
+    emit RepayFullMortgage(msg.sender, _mortgageId._value);
+    ///TODO: self destruct wrapped NFT
+  }
+
 
   /**
     * @dev function that allows to check the status of the loan
@@ -266,10 +343,6 @@ contract Mortgage is Ownable, IERC721Receiver {
     ///If any tokens are being farmed in a protocol being able to claim them.
   }
 
-  //To support ERC20 in the future
-  function requestMortgageERC20(uint256 mortageId) external {
-
-  }
 
   function destroy() onlyOwner public{
       		selfdestruct(payable(owner()));
