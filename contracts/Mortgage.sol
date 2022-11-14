@@ -241,12 +241,12 @@ contract Mortgage is Ownable, IERC721Receiver {
     require(msg.value == monthlyPayments(_mortageId), "The amount is incorrect");
     require(mortgageTracker[_mortageId].time < block.timestamp && block.timestamp < mortgageTracker[_mortageId].time + 4 weeks,
       "You have missed your mortgage monthly payment or already paid it, check status of loan");
-    mortgageTracker[_mortageId].seller.transfer(msg.value);
     mortgageTracker[_mortageId].balance += monthlyPayments(_mortageId);
     mortgageTracker[_mortageId].time = mortgageTracker[_mortageId].time + 4 weeks;
+    mortgageTracker[_mortageId].seller.transfer(msg.value);
     if(mortgageTracker[_mortageId].balance >= monthlyPayments(_mortageId) * mortgageTracker[_mortageId].duration) {
-      IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
       mortgageTracker[_mortageId].status = MortgageStatus.PAID;
+      IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
       ///TODO: self destruct wrapped NFT
     }
   }
@@ -262,13 +262,13 @@ contract Mortgage is Ownable, IERC721Receiver {
     require(_amount == monthlyPayments(_mortageId), "The amount is incorrect");
     require(mortgageTracker[_mortageId].time < block.timestamp && block.timestamp < mortgageTracker[_mortageId].time + 4 weeks,
       "You have missed your mortgage monthly payment or already paid it, check status of loan");
-    IERC20 erc20Address = IERC20(mortgageTrackerToken[_mortageId]);
-    erc20Address.transferFrom(mortgageTracker[_mortageId].buyer, mortgageTracker[_mortageId].seller, _amount);
     mortgageTracker[_mortageId].balance += monthlyPayments(_mortageId);
     mortgageTracker[_mortageId].time = mortgageTracker[_mortageId].time + 4 weeks;
+    IERC20 erc20Address = IERC20(mortgageTrackerToken[_mortageId]);
+    erc20Address.transferFrom(mortgageTracker[_mortageId].buyer, mortgageTracker[_mortageId].seller, _amount);
     if(mortgageTracker[_mortageId].balance >= monthlyPayments(_mortageId) * mortgageTracker[_mortageId].duration) {
-      IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
       mortgageTracker[_mortageId].status = MortgageStatus.PAID;
+      IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
       ///TODO: self destruct wrapped NFT
     }
   }
@@ -283,9 +283,9 @@ contract Mortgage is Ownable, IERC721Receiver {
     require(msg.sender == mortgageTracker[_mortageId].buyer, "Sender is not the buyer of the mortgage");
     ///TODO: If earlier payment there is a 5% penalty on top of the amount borrowed
     require(msg.value == getRemainingBalance(_mortageId), "balance numbers do not match ");
-    mortgageTracker[_mortageId].seller.transfer(msg.value);
-    IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
     mortgageTracker[_mortageId].status = MortgageStatus.PAID;
+        mortgageTracker[_mortageId].seller.transfer(msg.value);
+    IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
     emit RepayFullMortgage(msg.sender, _mortgageId._value);
     ///TODO: self destruct wrapped NFT
   }
@@ -300,10 +300,10 @@ contract Mortgage is Ownable, IERC721Receiver {
     require(msg.sender == mortgageTracker[_mortageId].buyer, "Sender is not the buyer of the mortgage");
     ///TODO: If earlier payment there is a 5% penalty on top of the amount borrowed
     require(_amount == getRemainingBalance(_mortageId), "balance numbers do not match ");
+    mortgageTracker[_mortageId].status = MortgageStatus.PAID;
     IERC20 erc20Address = IERC20(mortgageTrackerToken[_mortageId]);
     erc20Address.transferFrom(mortgageTracker[_mortageId].buyer, mortgageTracker[_mortageId].seller, _amount);
     IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
-    mortgageTracker[_mortageId].status = MortgageStatus.PAID;
     emit RepayFullMortgage(msg.sender, _mortgageId._value);
     ///TODO: self destruct wrapped NFT
   }
