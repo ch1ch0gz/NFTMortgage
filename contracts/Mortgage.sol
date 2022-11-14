@@ -284,7 +284,7 @@ contract Mortgage is Ownable, IERC721Receiver {
     ///TODO: If earlier payment there is a 5% penalty on top of the amount borrowed
     require(msg.value == getRemainingBalance(_mortageId), "balance numbers do not match ");
     mortgageTracker[_mortageId].status = MortgageStatus.PAID;
-        mortgageTracker[_mortageId].seller.transfer(msg.value);
+    mortgageTracker[_mortageId].seller.transfer(msg.value);
     IERC721(mortgageTracker[_mortageId].nftAddress).safeTransferFrom(address(this),msg.sender, mortgageTracker[_mortageId].tokenId);
     emit RepayFullMortgage(msg.sender, _mortgageId._value);
     ///TODO: self destruct wrapped NFT
